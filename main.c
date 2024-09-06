@@ -135,6 +135,17 @@ void shuffle_array(unsigned long array[], int size)
 	}
 }
 
+void format_flot(char *buf, size_t size, double value, char *flag)
+{
+	if (fabs(value - (int)value) > 0.000001) {
+		snprintf(buf, size, "%f", value);
+		while (buf[strlen(buf) - 1] == '0')
+			buf[strlen(buf) - 1] = '\0';
+		strncat(buf, flag, size);
+	} else
+		snprintf(buf, size, "%.0f%s", value, flag);
+}
+
 void caculate_speed(int c, double start, uint64_t iterations, double end, size_t size, int type)
 {
 	double total_time = (end - start);
@@ -146,12 +157,10 @@ void caculate_speed(int c, double start, uint64_t iterations, double end, size_t
 
 	if (size >= 1024 * 1024) {
 		size_m = (double)size / 1024 / 1024;
-		snprintf(xlabel[c], sizeof(xlabel[c]),
-			 fabs(size_m - (int)size_m) > 0.000001 ? "%.2fMB" : "%.0fMB", size_m);
+		format_flot(xlabel[c], sizeof(xlabel[c]), size_m, "MB");
 	} else if (size >= 1024) {
 		size_m = (double)size / 1024;
-		snprintf(xlabel[c], sizeof(xlabel[c]),
-			 fabs(size_m - (int)size_m) > 0.000001 ? "%.2fKB" : "%.0fKB", size_m);
+		format_flot(xlabel[c], sizeof(xlabel[c]), size_m, "KB");
 	} else {
 		snprintf(xlabel[c], sizeof(xlabel[c]), "%luB", size);
 	}
@@ -171,7 +180,7 @@ int main(int argc, char *argv[])
 	int k, c, t = 0, use_memcpy = 1, use_bandwidth = 0, dynamic_iter = 1;
 	double start, end;
 	uint64_t value = 0x1234567689abcdef;
-	char job_name[128] = { 0 };
+	char job_name[256] = { 0 };
 	char tmp[128] = { 0 };
 
 	while ((opt = getopt(argc, argv, "s:i:n:t:cuj:")) != -1) {
@@ -242,15 +251,12 @@ int main(int argc, char *argv[])
 	if (t)
 		k = t;
 	if (!job_name[0]) {
-		struct utsname sys_info;
-		if (uname(&sys_info) != 0) {
-			perror("uname");
-			return 1;
-		}
-		snprintf(job_name, sizeof(job_name), "%s", sys_info.machine);
+		omp_capture_affinity(job_name, sizeof(job_name), "%H");
 	}
 
-	snprintf(tmp, sizeof(tmp), " %dThread %s", k, use_bandwidth ? "Bandwidth" : "Memcpy");
+	snprintf(tmp, sizeof(tmp), " %dThread %s ", k, use_bandwidth ? "Bandwidth" : "Memcpy");
+	strcat(job_name, tmp);
+	omp_capture_affinity(tmp, sizeof(tmp), "(Affinity:%{thread_affinity})");
 	strcat(job_name, tmp);
 
 	omp_set_num_threads(k);

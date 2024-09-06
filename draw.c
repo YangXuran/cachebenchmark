@@ -36,7 +36,7 @@ void create_plot(const char *filename, const char *title, const char *xlabel, co
 	fprintf(gnuplotPipe, "set ylabel '%s'\n", ylabel);
 	fprintf(gnuplotPipe, "set autoscale xy\n");
 	fprintf(gnuplotPipe, "set xtics rotate by -45\n");
-	fprintf(gnuplotPipe, "set ytics auto 5000\n");
+	fprintf(gnuplotPipe, "set ytics auto 10000\n");
 }
 
 void set_label(int xlabel_s, const char xlabel[][xlabel_s], int xc, const char *line_titles[],

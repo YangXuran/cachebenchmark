@@ -1,7 +1,7 @@
 CC = aarch64-none-linux-gnu-gcc
 C++ = aarch64-none-linux-gnu-g++
 AS = aarch64-none-linux-gnu-as
-CFLAGS = -O3 -Wall -fopenmp
+CFLAGS = -O3 -Wall -fopenmp -static
 
 cachetestbench: main.o memcpy-arm64.o draw.o routines-arm-64bit.o
 	$(C++) $(CFLAGS) -o cachetestbench main.o memcpy-arm64.o routines-arm-64bit.o draw.o

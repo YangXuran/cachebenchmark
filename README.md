@@ -11,6 +11,32 @@ This project is a memory and cache performance testing tool for ARMv8 systems. I
 - **Cross-Compilation Ready**: Designed for easy cross-compilation and execution on embedded ARMv8 systems.
 - **Graphical Output**: Generates line charts of performance results using `gnuplot`.
 
+### Usage
+
+- -s: configure the maximum test data size. The default value is 256MB.
+
+- -i: set test loops. The default setting is dynamically adjusted based on the current test size.
+
+- -n: set the program's nice value. The default is -20 (the highest priority).
+
+- -c: use memcpy for testing performance.
+
+- -u: use the bandwidth testing program to measure performance.
+
+- -j: set a custom task name.
+
+- -t: set the maximum number of parallel threads. The default is the number of physical threads on the system.
+
+If you need to set CPU affinity, you can use OpenMP environment variables:
+
+For example, to bind threads to cores 1 and 3, use the following OpenMP environment variables:
+```
+export OMP_PLACES="{1,3}"
+export OMP_PROC_BIND=close
+```
+Read this for more details: [OMP_PLACES](https://www.openmp.org/spec-html/5.0/openmpse53.html)
+
+
 ### Dependencies
 
 This tool requires `gnuplot` to generate performance line charts. Before using the tool, ensure that `gnuplot` is installed and properly configured on your ARMv8 embedded device.
