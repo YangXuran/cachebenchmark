@@ -34,6 +34,11 @@ extern void set_label(int xlabel_s, const char xlabel[][xlabel_s], int xc,
 		      const char *line_titles[], int xl);
 extern void write_data(double x[], int c);
 extern void draw_plot();
+extern void create_file(char *filename, char *title, char *xlabels, char *ylabels);
+extern void save_label(int xlabel_s, const char xlabel[][xlabel_s], int xc,
+		       const char *line_titles[], int xl);
+extern void save_data(double x[], int c);
+extern void close_file();
 
 extern void memcpy_arm64(void *dest, void *src, size_t n);
 extern int ReaderVector(void *ptr, unsigned long size, unsigned long loops);
@@ -41,6 +46,8 @@ extern int RandomReaderVector(void *ptr, unsigned long n_chunks, unsigned long l
 extern int WriterVector(void *ptr, unsigned long size, unsigned long loops, unsigned long value);
 extern int RandomWriterVector(void *ptr, unsigned long size, unsigned long loops,
 			      unsigned long value);
+void float_matrix_performance_test(int N, double *f64_s_t, double *f64_v_t, double *f32_s_t,
+				   double *f32_v_t);
 
 #define __MAX_ITER	1000000
 #define MIN_BLOCK_SIZE	256
@@ -54,6 +61,9 @@ enum {
 	PTYPE_RANDOM_READ = 3,
 	PTYPE_MAX
 };
+
+char *test_name[] = { "memcpy", "bandwidth", "matrix", 0 };
+enum { TEST_MEMCPY = 0, TEST_BANDWIDTH = 1, TEST_MATRIX = 2, TEST_MAX };
 
 char xlabel[128][XLABEL_STR_SIZE];
 double ypoint[4][128];
@@ -171,22 +181,24 @@ void caculate_speed(int c, double start, uint64_t iterations, double end, size_t
 int main(int argc, char *argv[])
 {
 	int opt = 0;
-	int max_size = 256 * 1024 * 1024;
+	int use_param_size = 0, max_size = 256 * 1024 * 1024;
 	int max_iter = __MAX_ITER;
-	int iter = 0;
-	int nice = -20;
+	int save_as_file = 0;
+	int iter = 0, nice = -20, test = -1;
 	uint64_t curr_size = MIN_BLOCK_SIZE;
 	void *src, *dest;
-	int k, c, t = 0, use_memcpy = 1, use_bandwidth = 0, dynamic_iter = 1;
+	int k, c, t = 0, dynamic_iter = 1;
 	double start, end;
 	uint64_t value = 0x1234567689abcdef;
 	char job_name[256] = { 0 };
+	char file_name[256] = { 0 };
 	char tmp[128] = { 0 };
 
-	while ((opt = getopt(argc, argv, "s:i:n:t:cuj:")) != -1) {
+	while ((opt = getopt(argc, argv, "ds:i:n:t:f:j:")) != -1) {
 		switch (opt) {
 		case 's':
 			max_size = atoi(optarg);
+			use_param_size = 1;
 			break;
 		case 'i':
 			dynamic_iter = 0;
@@ -198,37 +210,38 @@ int main(int argc, char *argv[])
 		case 't':
 			t = atoi(optarg);
 			break;
-		case 'c':
-			use_memcpy = 1;
-			break;
-		case 'u':
-			use_bandwidth = 1;
-			use_memcpy = 0;
+		case 'f':
+			for (int i = 0; i < TEST_MAX; i++) {
+				if (strcmp(test_name[i], optarg) == 0) {
+					test = i;
+					break;
+				}
+			}
+			if (test == -1) {
+				printf("Usage -f [memcpy|bandwidth|matrix]\n");
+				exit(1);
+			}
 			break;
 		case 'j':
 			strcpy(job_name, optarg);
+			break;
+		case 'd':
+			save_as_file = 1;
+			break;
 		default:
 			fprintf(stderr,
-				"Usage: %s [-s max_size] [-i max_iter] [-n nice_value] [-t num_threads] [-c use_memcpy] [-u use_bandwidth] [-j job_name]\n",
+				"Usage: %s [-s max_size] [-i max_iter] [-n nice_value] [-t num_threads]"
+				"[-f test case] [-j job_name] [-d save data as file]\n",
 				argv[0]);
 			exit(1);
 		}
 	}
+
+	if (!use_param_size)
+		max_size = test == TEST_MATRIX ? 3000 : 256 * 1024 * 1024;
+
 	printf("max_size = %dMB, max_iter = %d, nice = %d\n", max_size / 1024 / 1024, max_iter,
 	       nice);
-
-	src = aligned_alloc(1024, max_size);
-	if (src == NULL) {
-		fprintf(stderr, "aligned_alloc failed\n");
-		exit(1);
-	}
-
-	dest = aligned_alloc(1024, max_size);
-	if (dest == NULL) {
-		fprintf(stderr, "aligned_alloc failed\n");
-		exit(1);
-	}
-	printf("src = %p, dest = %p\n", src, dest);
 
 	if (setpriority(PRIO_PROCESS, 0, nice) == -1) {
 		perror("setpriority");
@@ -250,18 +263,37 @@ int main(int argc, char *argv[])
 	k++;
 	if (t)
 		k = t;
+
 	if (!job_name[0]) {
 		omp_capture_affinity(job_name, sizeof(job_name), "%H");
 	}
 
-	snprintf(tmp, sizeof(tmp), " %dThread %s ", k, use_bandwidth ? "Bandwidth" : "Memcpy");
+	snprintf(tmp, sizeof(tmp), " %dThread %s ", k, test_name[test]);
 	strcat(job_name, tmp);
-	omp_capture_affinity(tmp, sizeof(tmp), "(Affinity:%{thread_affinity})");
+	omp_capture_affinity(tmp, sizeof(tmp), "CPU%{thread_affinity}");
 	strcat(job_name, tmp);
 
 	omp_set_num_threads(k);
 	printf("%s\n", job_name);
-	if (use_memcpy) {
+	strcpy(file_name, job_name);
+	for (int i = 0; i < strlen(file_name); i++) {
+		if (file_name[i] == ' ')
+			file_name[i] = '_';
+	}
+	strcat(file_name, save_as_file ? ".dat" : ".svg");
+	if (test == TEST_MEMCPY) {
+		src = aligned_alloc(1024, max_size);
+		if (src == NULL) {
+			fprintf(stderr, "aligned_alloc failed\n");
+			exit(1);
+		}
+
+		dest = aligned_alloc(1024, max_size);
+		if (dest == NULL) {
+			fprintf(stderr, "aligned_alloc failed\n");
+			exit(1);
+		}
+		printf("src = %p, dest = %p\n", src, dest);
 		c = 0;
 		while ((curr_size * k) <= max_size) {
 			iter = dynamic_iter ? (1ull << 35) / curr_size : max_iter;
@@ -278,13 +310,29 @@ int main(int argc, char *argv[])
 			c++;
 			curr_size *= 2;
 		}
-		create_plot("memcpy.svg", job_name, "Block Size", "Rate (MB/s)");
 		const char *line_titles[] = { "memcpy" };
-		set_label(XLABEL_STR_SIZE, xlabel, c, line_titles, 1);
-		write_data(ypoint[PTYPE_MEMCPY], c);
-		draw_plot();
+		if (save_as_file) {
+			create_file(file_name, job_name, "Block Size", "Rate (MB/s)");
+			save_label(XLABEL_STR_SIZE, xlabel, c, line_titles, 1);
+			save_data(ypoint[PTYPE_MEMCPY], c);
+			close_file();
+		} else {
+			create_plot(file_name, job_name, "Block Size", "Rate (MB/s)");
+			set_label(XLABEL_STR_SIZE, xlabel, c, line_titles, 1);
+			write_data(ypoint[PTYPE_MEMCPY], c);
+			draw_plot();
+		}
+
+		free(src);
+		free(dest);
 	}
-	if (use_bandwidth) {
+	if (test == TEST_BANDWIDTH) {
+		src = aligned_alloc(1024, max_size);
+		if (src == NULL) {
+			fprintf(stderr, "aligned_alloc failed\n");
+			exit(1);
+		}
+
 		c = 0;
 		curr_size = cache_sizes[c];
 		printf("Test Write Vector\n");
@@ -365,13 +413,44 @@ int main(int argc, char *argv[])
 		}
 
 		const char *line_titles[] = { "Write", "Read", "Random Write", "Random Read" };
-		create_plot("bandwidth.svg", job_name, "Block Size", "Rate (MB/s)");
-		set_label(XLABEL_STR_SIZE, xlabel, c, line_titles, PTYPE_MAX);
-		for (int i = 0; i < PTYPE_MAX; i++)
-			write_data(ypoint[i], c);
-		draw_plot();
+		if (save_as_file) {
+			create_file(file_name, job_name, "Block Size", "Rate (per second)");
+			save_label(XLABEL_STR_SIZE, xlabel, c, line_titles, PTYPE_MAX);
+			for (int i = 0; i < PTYPE_MAX; i++)
+				save_data(ypoint[i], c);
+			close_file();
+		} else {
+			create_plot(file_name, job_name, "Block Size", "Rate (MB/s)");
+			set_label(XLABEL_STR_SIZE, xlabel, c, line_titles, PTYPE_MAX);
+			for (int i = 0; i < PTYPE_MAX; i++)
+				write_data(ypoint[i], c);
+			draw_plot();
+		}
+		free(src);
 	}
-	free(src);
-	free(dest);
+	if (test == TEST_MATRIX) {
+		int N, i = 0;
+		for (N = 512, i = 0; N < max_size; N += 64, i++) {
+			float_matrix_performance_test(N, &ypoint[0][i], &ypoint[1][i],
+						      &ypoint[2][i], &ypoint[3][i]);
+			snprintf(xlabel[i], sizeof(xlabel[i]), "%d", N);
+		}
+		const char *line_titles[] = { "f32 Scalar", "f32 Vector", "f64 Scalar",
+					      "f64 Vector" };
+		if (save_as_file) {
+			create_file(file_name, job_name, "Matrix Size", "Time(s)");
+			save_label(XLABEL_STR_SIZE, xlabel, i, line_titles, 4);
+			for (int j = 0; j < 4; j++)
+				save_data(ypoint[j], i);
+			close_file();
+		} else {
+			create_plot(file_name, job_name, "Matrix Size", "Time(s)");
+			set_label(XLABEL_STR_SIZE, xlabel, i, line_titles, 4);
+			for (int j = 0; j < 4; j++)
+				write_data(ypoint[j], i);
+			draw_plot();
+		}
+	}
+	printf("Save file: %s\n", file_name);
 	return 0;
 }

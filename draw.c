@@ -18,6 +18,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
+#include <string.h>
 
 static FILE *gnuplotPipe;
 
@@ -36,7 +37,8 @@ void create_plot(const char *filename, const char *title, const char *xlabel, co
 	fprintf(gnuplotPipe, "set ylabel '%s'\n", ylabel);
 	fprintf(gnuplotPipe, "set autoscale xy\n");
 	fprintf(gnuplotPipe, "set xtics rotate by -45\n");
-	fprintf(gnuplotPipe, "set ytics auto 10000\n");
+	if (strcmp(ylabel, "Rate (MB/s)") == 0)
+		fprintf(gnuplotPipe, "set ytics auto 10000\n");
 }
 
 void set_label(int xlabel_s, const char xlabel[][xlabel_s], int xc, const char *line_titles[],
