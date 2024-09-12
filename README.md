@@ -19,9 +19,7 @@ This project is a memory and cache performance testing tool for ARMv8 systems. I
 
 - -n: set the program's nice value. The default is -20 (the highest priority).
 
-- -c: use memcpy for testing performance.
-
-- -u: use the bandwidth testing program to measure performance.
+- -f: use which routine to test. [memcpy | bandwidth].
 
 - -j: set a custom task name.
 
