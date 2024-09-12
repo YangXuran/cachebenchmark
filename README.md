@@ -7,6 +7,7 @@ This project is a memory and cache performance testing tool for ARMv8 systems. I
 - **Cache Size Estimation and Performance Testing**: Measures cache size and performance on ARMv8.
 - **`memcpy` Performance Test**: Uses SIMD instructions from the GNU C Library to test `memcpy` performance.
 - **Read/Write Bandwidth Testing**: Uses SIMD code from the "Bandwidth: A Memory Bandwidth Benchmark" tool to test read/write rates with varying data sizes.
+- **Matrix Multiplication Testing**: Uses the SIMD to test matrix multiplication performance.
 - **Multi-threaded Support**: Allows for parallel testing across multiple clusters to analyze cache performance in multi-core environments by using OpenMP.
 - **Cross-Compilation Ready**: Designed for easy cross-compilation and execution on embedded ARMv8 systems.
 - **Graphical Output**: Generates line charts of performance results using `gnuplot`.
@@ -19,11 +20,13 @@ This project is a memory and cache performance testing tool for ARMv8 systems. I
 
 - -n: set the program's nice value. The default is -20 (the highest priority).
 
-- -f: use which routine to test. [memcpy | bandwidth].
+- -f: use which routine to test. [memcpy | bandwidth | matrix].
 
 - -j: set a custom task name.
 
 - -t: set the maximum number of parallel threads. The default is the number of physical threads on the system.
+
+- -d: save the test results to a file, then you can use `draw2html.py` to generate a more friendly HTML report.
 
 If you need to set CPU affinity, you can use OpenMP environment variables:
 
