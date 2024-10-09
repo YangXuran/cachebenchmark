@@ -19,7 +19,10 @@
 
 	.text
 	.global memcpy_arm64
+	.global _memcpy_arm64
+#ifndef __APPLE__
 	.type memcpy_arm64, %function
+#endif
 
 #define dstin	x0
 #define src	x1
@@ -46,6 +49,7 @@
 #define H_q	q7
 
 memcpy_arm64:
+_memcpy_arm64:
 	// Function prologue
 	// Save link register and any callee-saved registers here if necessary
 	
@@ -160,4 +164,6 @@ copy64_from_end:
 
 	// Function epilogue
 	// Restore link register and any callee-saved registers here if necessary
+#ifndef __APPLE__
 	.size memcpy_arm64, .-memcpy_arm64
+#endif

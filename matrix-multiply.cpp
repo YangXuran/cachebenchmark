@@ -41,7 +41,7 @@ template <typename T> void initialize_matrix(T *matrix, const int N)
 }
 
 template <typename T>
-void matrix_multiply_scalar(const T *A, const T *B, T *__restrict C, const int N)
+void matrix_multiply_scalar(const T *A, const T *B, T *C, const int N)
 {
 #pragma omp parallel for
 	for (int i = 0; i < N; ++i) {
@@ -84,6 +84,7 @@ void matrix_multiply_vector(const double *A, const double *B, double *C, int N)
 
 void matrix_multiply_vector(const float *A, const float *B, float *C, int N)
 {
+#pragma omp parallel for
 	for (int ii = 0; ii < N; ii += 4) {
 		for (int jj = 0; jj < N; jj += 4) {
 			float32x4_t C0 = vmovq_n_f32(0);
