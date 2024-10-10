@@ -182,6 +182,7 @@ int main(int argc, char *argv[])
 {
 	int opt = 0;
 	int use_param_size = 0, max_size = 256 * 1024 * 1024;
+	int test_single_size = 0;
 	int max_iter = __MAX_ITER;
 	int save_as_file = 0;
 	int iter = 0, nice = -20, test = -1;
@@ -194,11 +195,15 @@ int main(int argc, char *argv[])
 	char file_name[256] = { 0 };
 	char tmp[128] = { 0 };
 
-	while ((opt = getopt(argc, argv, "ds:i:n:t:f:j:")) != -1) {
+	while ((opt = getopt(argc, argv, "ds:i:n:t:f:j:S:")) != -1) {
 		switch (opt) {
 		case 's':
 			max_size = atoi(optarg);
 			use_param_size = 1;
+			break;
+		case 'S':
+			max_size = atoi(optarg);
+			test_single_size = 1;
 			break;
 		case 'i':
 			dynamic_iter = 0;
@@ -237,7 +242,7 @@ int main(int argc, char *argv[])
 		}
 	}
 
-	if (!use_param_size)
+	if (!use_param_size && !test_single_size)
 		max_size = test == TEST_MATRIX ? 3000 : 256 * 1024 * 1024;
 
 	printf("max_size = %dMB, max_iter = %d, nice = %d\n", max_size / 1024 / 1024, max_iter,
@@ -295,6 +300,8 @@ int main(int argc, char *argv[])
 		}
 		printf("src = %p, dest = %p\n", src, dest);
 		c = 0;
+		if (test_single_size)
+			curr_size = max_size / k;
 		while ((curr_size * k) <= max_size) {
 			iter = dynamic_iter ? (1ull << 35) / curr_size : max_iter;
 			start = get_time();
@@ -334,7 +341,10 @@ int main(int argc, char *argv[])
 		}
 
 		c = 0;
-		curr_size = cache_sizes[c];
+		if (test_single_size)
+			curr_size = max_size / k;
+		else
+			curr_size = cache_sizes[c];
 		printf("Test Write Vector\n");
 		while ((curr_size * k) <= max_size) {
 			iter = dynamic_iter ? (1ull << 35) / curr_size : max_iter;
@@ -351,7 +361,10 @@ int main(int argc, char *argv[])
 			curr_size = cache_sizes[c];
 		}
 		c = 0;
-		curr_size = cache_sizes[c];
+		if (test_single_size)
+			curr_size = max_size / k;
+		else
+			curr_size = cache_sizes[c];
 		printf("Test Read Vector\n");
 		while ((curr_size * k) <= max_size) {
 			iter = dynamic_iter ? (1ull << 35) / curr_size : max_iter;
@@ -376,7 +389,10 @@ int main(int argc, char *argv[])
 		}
 		shuffle_array(*chunk_ptrs, n_chunks);
 		c = 0;
-		curr_size = cache_sizes[c];
+		if (test_single_size)
+			curr_size = max_size / k;
+		else
+			curr_size = cache_sizes[c];
 		printf("Test Random Write Vector\n");
 		while ((curr_size * k) <= max_size) {
 			iter = dynamic_iter ? (1ull << 35) / curr_size : max_iter;
@@ -394,7 +410,10 @@ int main(int argc, char *argv[])
 			curr_size = cache_sizes[c];
 		}
 		c = 0;
-		curr_size = cache_sizes[c];
+		if (test_single_size)
+			curr_size = max_size / k;
+		else
+			curr_size = cache_sizes[c];
 		printf("Test Random Read Vector\n");
 		while ((curr_size * k) <= max_size) {
 			iter = dynamic_iter ? (1ull << 35) / curr_size : max_iter;
@@ -430,7 +449,8 @@ int main(int argc, char *argv[])
 	}
 	if (test == TEST_MATRIX) {
 		int N, i = 0;
-		for (N = 512, i = 0; N < max_size; N += 64, i++) {
+		N = test_single_size ? max_size : 512;
+		for (i = 0; N <= max_size; N += 64, i++) {
 			float_matrix_performance_test(N, &ypoint[0][i], &ypoint[1][i],
 						      &ypoint[2][i], &ypoint[3][i]);
 			snprintf(xlabel[i], sizeof(xlabel[i]), "%d", N);
