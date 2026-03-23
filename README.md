@@ -34,6 +34,7 @@ For example, to bind threads to cores 1 and 3, use the following OpenMP environm
 ```
 export OMP_PLACES="{1,3}"
 export OMP_PROC_BIND=close
+cachetestbench -t 2 -f bandwidth
 ```
 Read this for more details: [OMP_PLACES](https://www.openmp.org/spec-html/5.0/openmpse53.html)
 

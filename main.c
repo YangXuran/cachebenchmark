@@ -14,7 +14,7 @@
  * You should have received a copy of the GNU General Public License
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
-
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -27,13 +27,13 @@
 #include <time.h>
 #include <sys/utsname.h>
 #include <math.h>
+#include <ctype.h>
+#include <sched.h>
+#include <stdbool.h>
 
-extern void create_plot(const char *filename, const char *title, const char *xlabel,
-			const char *ylabel);
 extern void set_label(int xlabel_s, const char xlabel[][xlabel_s], int xc,
 		      const char *line_titles[], int xl);
 extern void write_data(double x[], int c);
-extern void draw_plot();
 extern void create_file(char *filename, char *title, char *xlabels, char *ylabels);
 extern void save_label(int xlabel_s, const char xlabel[][xlabel_s], int xc,
 		       const char *line_titles[], int xl);
@@ -48,10 +48,23 @@ extern int RandomWriterVector(void *ptr, unsigned long size, unsigned long loops
 			      unsigned long value);
 void float_matrix_performance_test(int N, double *f64_s_t, double *f64_v_t, double *f32_s_t,
 				   double *f32_v_t);
+void *thrash_initialize(uint64_t block_size, uint64_t page_size, uint64_t line_size, void **base);
+#define ONE                                                                                        \
+	asm volatile("ldr %0, [%0]\n\t" : "+r"(p) : : "memory");                                   \
+	;
+#define FIVE	ONE ONE ONE ONE ONE
+#define TEN	FIVE FIVE
+#define FIFTY	TEN TEN TEN TEN TEN
+#define HUNDRED FIFTY FIFTY
+/* benchmark_loads is now defined in latency.c */
 
 #define __MAX_ITER	1000000
 #define MIN_BLOCK_SIZE	256
 #define XLABEL_STR_SIZE 32
+#define MAX_TEST_POINTS 256
+
+#define CACHE_LINE_SIZE 64
+#define PAGE_SIZE	4096
 
 enum {
 	PTYPE_MEMCPY = 0,
@@ -62,13 +75,13 @@ enum {
 	PTYPE_MAX
 };
 
-char *test_name[] = { "memcpy", "bandwidth", "matrix", 0 };
-enum { TEST_MEMCPY = 0, TEST_BANDWIDTH = 1, TEST_MATRIX = 2, TEST_MAX };
+char *test_name[] = { "memcpy", "bandwidth", "matrix", "latency" };
+enum { TEST_MEMCPY = 0, TEST_BANDWIDTH = 1, TEST_MATRIX = 2, TEST_LATENCY = 3, TEST_MAX };
 
-char xlabel[128][XLABEL_STR_SIZE];
-double ypoint[4][128];
+char xlabel[MAX_TEST_POINTS][XLABEL_STR_SIZE];
+double ypoint[4][MAX_TEST_POINTS];
 
-static int cache_sizes[] = {
+static int cache_sizes[MAX_TEST_POINTS + 1] = {
 	256,
 	512,
 	768,
@@ -135,11 +148,11 @@ inline double get_time()
 	return omp_get_wtime();
 }
 
-void shuffle_array(unsigned long array[], int size)
+void shuffle_array(unsigned long **array, int size)
 {
 	for (int i = size - 1; i > 0; i--) {
 		int j = (int)(random() % (i + 1));
-		int temp = array[i];
+		unsigned long *temp = array[i];
 		array[i] = array[j];
 		array[j] = temp;
 	}
@@ -149,9 +162,12 @@ void format_flot(char *buf, size_t size, double value, char *flag)
 {
 	if (fabs(value - (int)value) > 0.000001) {
 		snprintf(buf, size, "%f", value);
-		while (buf[strlen(buf) - 1] == '0')
-			buf[strlen(buf) - 1] = '\0';
-		strncat(buf, flag, size);
+		size_t len = strlen(buf);
+		while (len > 0 && buf[len - 1] == '0') {
+			buf[len - 1] = '\0';
+			len--;
+		}
+		strncat(buf, flag, size - len - 1);
 	} else
 		snprintf(buf, size, "%.0f%s", value, flag);
 }
@@ -178,31 +194,95 @@ void caculate_speed(int c, double start, uint64_t iterations, double end, size_t
 	       xlabel[c], *y, total_time, single_time, iterations);
 }
 
+void caculate_latency(int c, double start, uint64_t iterations, double end, size_t size, int type)
+{
+	double total_time = (end - start);
+	double *y = &ypoint[type][c];
+	double size_m;
+
+	*y = total_time * 1e9 / iterations;
+
+	if (size >= 1024 * 1024) {
+		size_m = (double)size / 1024 / 1024;
+		format_flot(xlabel[c], sizeof(xlabel[c]), size_m, "MB");
+	} else if (size >= 1024) {
+		size_m = (double)size / 1024;
+		format_flot(xlabel[c], sizeof(xlabel[c]), size_m, "KB");
+	} else {
+		snprintf(xlabel[c], sizeof(xlabel[c]), "%luB", size);
+	}
+	printf("Size = %s, Latency = %.2fns, Time = %fs, iterations = %lu\n", xlabel[c], *y,
+	       total_time, iterations);
+}
+
+int parse_size(const char *s)
+{
+	double num;
+	char unit[3] = { 0 };
+	int n = sscanf(s, "%lf%2s", &num, unit);
+	if (n == 1) {
+		return (int)(num);
+	}
+	if (n != 2)
+		return 0;
+
+	for (char *p = unit; *p; ++p)
+		*p = toupper(*p);
+	uint64_t mul = (!strcmp(unit, "B"))  ? 1 :
+		       (!strcmp(unit, "KB")) ? 1024 :
+		       (!strcmp(unit, "MB")) ? 1024 * 1024 :
+					       0;
+
+	return mul ? (int)(num * mul) : 0;
+}
+
+void invalidate_cache(void *ptr, void *end)
+{
+	for (char *p = ptr; p < (char *)end; p += 64)
+		asm volatile("dc civac, %0" : : "r"(p));
+}
+
+void pin_to_cpu(int cpu)
+{
+	cpu_set_t cpuset;
+	CPU_ZERO(&cpuset);
+	CPU_SET(cpu, &cpuset);
+	sched_setaffinity(0, sizeof(cpu_set_t), &cpuset);
+}
+
 int main(int argc, char *argv[])
 {
 	int opt = 0;
-	int use_param_size = 0, max_size = 256 * 1024 * 1024;
+	int use_param_size = 0, max_size = 256 * 1024 * 1024, granularity = 0;
 	int test_single_size = 0;
-	int max_iter = __MAX_ITER;
+	uint64_t iter = 0, max_iter = __MAX_ITER;
 	int save_as_file = 0;
-	int iter = 0, nice = -20, test = -1;
+	int nice = -20, test = -1;
 	uint64_t curr_size = MIN_BLOCK_SIZE;
 	void *src, *dest;
-	int k, c, t = 0, dynamic_iter = 1;
+	int k = 1, c, t = 0, dynamic_iter = 1;
 	double start, end;
 	uint64_t value = 0x1234567689abcdef;
 	char job_name[256] = { 0 };
 	char file_name[256] = { 0 };
 	char tmp[128] = { 0 };
 
-	while ((opt = getopt(argc, argv, "ds:i:n:t:f:j:S:")) != -1) {
+	while ((opt = getopt(argc, argv, "ds:i:n:t:f:j:S:l:")) != -1) {
 		switch (opt) {
 		case 's':
-			max_size = atoi(optarg);
+			max_size = parse_size(optarg);
+			if (max_size == 0) {
+				fprintf(stderr, "Usage -s [size][B|KB|MB]\n");
+				exit(1);
+			}
 			use_param_size = 1;
 			break;
 		case 'S':
-			max_size = atoi(optarg);
+			max_size = parse_size(optarg);
+			if (max_size == 0) {
+				fprintf(stderr, "Usage -S [size][B|KB|MB]\n");
+				exit(1);
+			}
 			test_single_size = 1;
 			break;
 		case 'i':
@@ -223,9 +303,19 @@ int main(int argc, char *argv[])
 				}
 			}
 			if (test == -1) {
-				printf("Usage -f [memcpy|bandwidth|matrix]\n");
+				printf("Usage -f [memcpy|bandwidth|matrix|latency]\n");
 				exit(1);
 			}
+			break;
+		case 'l':
+			granularity = parse_size(optarg);
+			if (granularity == 0) {
+				printf("Usage -l [size] [B|KB|MB]\n");
+				exit(1);
+			}
+			printf("Set linear granularity = %d\n", granularity);
+			for (int i = 0; i < MAX_TEST_POINTS; i++)
+				cache_sizes[i] = (i + 1) * granularity;
 			break;
 		case 'j':
 			strcpy(job_name, optarg);
@@ -259,26 +349,28 @@ int main(int argc, char *argv[])
 		{
 			k = omp_get_num_threads();
 			printf("System Maximum threads = %i\n", k);
+			if (getenv("OMP_PLACES")) {
+				k = omp_get_place_num_procs(0);
+				printf("Use threads = %i\n", k);
+			}
 		}
 	}
 
-	k = 0;
-#pragma omp parallel
-#pragma omp atomic
-	k++;
-	if (t)
-		k = t;
+	if (test == -1) {
+		fprintf(stderr, "Error: No test type specified. Use -f [memcpy|bandwidth|matrix|latency]\n");
+		exit(1);
+	}
 
 	if (!job_name[0]) {
 		omp_capture_affinity(job_name, sizeof(job_name), "%H");
 	}
 
-	snprintf(tmp, sizeof(tmp), " %dThread %s ", k, test_name[test]);
-	strcat(job_name, tmp);
+	snprintf(tmp, sizeof(tmp), " %dThread_%s_", k, test_name[test]);
+	strncat(job_name, tmp, sizeof(job_name) - strlen(job_name) - 1);
 	omp_capture_affinity(tmp, sizeof(tmp), "CPU%{thread_affinity}");
-	strcat(job_name, tmp);
+	strncat(job_name, tmp, sizeof(job_name) - strlen(job_name) - 1);
 
-	omp_set_num_threads(k);
+	// omp_set_num_threads(k);
 	printf("%s\n", job_name);
 	strcpy(file_name, job_name);
 	for (int i = 0; i < strlen(file_name); i++) {
@@ -315,6 +407,8 @@ int main(int argc, char *argv[])
 			end = get_time();
 			caculate_speed(c, start, iter, end, curr_size * k, PTYPE_MEMCPY);
 			c++;
+			if (test_single_size)
+				break;
 			curr_size *= 2;
 		}
 		const char *line_titles[] = { "memcpy" };
@@ -323,11 +417,6 @@ int main(int argc, char *argv[])
 			save_label(XLABEL_STR_SIZE, xlabel, c, line_titles, 1);
 			save_data(ypoint[PTYPE_MEMCPY], c);
 			close_file();
-		} else {
-			create_plot(file_name, job_name, "Block Size", "Rate (MB/s)");
-			set_label(XLABEL_STR_SIZE, xlabel, c, line_titles, 1);
-			write_data(ypoint[PTYPE_MEMCPY], c);
-			draw_plot();
 		}
 
 		free(src);
@@ -342,7 +431,7 @@ int main(int argc, char *argv[])
 
 		c = 0;
 		if (test_single_size)
-			curr_size = max_size / k;
+			curr_size = (max_size / k) & ~255;  /* Align to 256 bytes */
 		else
 			curr_size = cache_sizes[c];
 		printf("Test Write Vector\n");
@@ -351,18 +440,20 @@ int main(int argc, char *argv[])
 			start = get_time();
 #pragma omp parallel for schedule(static)
 			for (int job = 0; job < k; job++) {
-				WriterVector(src + (max_size / k * job), curr_size, iter, value);
+				WriterVector((char *)src + ((size_t)max_size / k * job), curr_size, iter, value);
 			}
 			end = get_time();
 			caculate_speed(c, start, iter, end, curr_size * k, PTYPE_WRITE);
 			c++;
-			if (c >= (sizeof(cache_sizes) / sizeof(cache_sizes[0])))
+			if (test_single_size)
+				break;
+			if (cache_sizes[c] == 0)
 				break;
 			curr_size = cache_sizes[c];
 		}
 		c = 0;
 		if (test_single_size)
-			curr_size = max_size / k;
+			curr_size = (max_size / k) & ~255;  /* Align to 256 bytes */
 		else
 			curr_size = cache_sizes[c];
 		printf("Test Read Vector\n");
@@ -371,12 +462,14 @@ int main(int argc, char *argv[])
 			start = get_time();
 #pragma omp parallel for schedule(static)
 			for (int job = 0; job < k; job++) {
-				ReaderVector(src + (max_size / k * job), curr_size, iter);
+				ReaderVector((char *)src + ((size_t)max_size / k * job), curr_size, iter);
 			}
 			end = get_time();
 			caculate_speed(c, start, iter, end, curr_size * k, PTYPE_READ);
 			c++;
-			if (c >= (sizeof(cache_sizes) / sizeof(cache_sizes[0])))
+			if (test_single_size)
+				break;
+			if (cache_sizes[c] == 0)
 				break;
 			curr_size = cache_sizes[c];
 		}
@@ -384,13 +477,17 @@ int main(int argc, char *argv[])
 		unsigned long n_chunks = max_size / 256;
 		unsigned long **chunk_ptrs =
 			(unsigned long **)malloc(n_chunks * sizeof(unsigned long *));
-		for (int i = 0; i < n_chunks; i++) {
-			chunk_ptrs[i] = (unsigned long *)(src + i * 256);
+		if (chunk_ptrs == NULL) {
+			fprintf(stderr, "malloc failed for chunk_ptrs\n");
+			exit(1);
 		}
-		shuffle_array(*chunk_ptrs, n_chunks);
+		for (int i = 0; i < n_chunks; i++) {
+			chunk_ptrs[i] = (unsigned long *)((char *)src + i * 256);
+		}
+		shuffle_array(chunk_ptrs, n_chunks);
 		c = 0;
 		if (test_single_size)
-			curr_size = max_size / k;
+			curr_size = (max_size / k) & ~255;  /* Align to 256 bytes */
 		else
 			curr_size = cache_sizes[c];
 		printf("Test Random Write Vector\n");
@@ -399,19 +496,21 @@ int main(int argc, char *argv[])
 			start = get_time();
 #pragma omp parallel for schedule(static)
 			for (int job = 0; job < k; job++) {
-				RandomWriterVector(chunk_ptrs + (n_chunks / k * job),
+				RandomWriterVector(chunk_ptrs + ((size_t)n_chunks / k * job),
 						   curr_size / 256, iter, value);
 			}
 			end = get_time();
 			caculate_speed(c, start, iter, end, curr_size * k, PTYPE_RANDOM_WRITE);
 			c++;
-			if (c >= (sizeof(cache_sizes) / sizeof(cache_sizes[0])))
+			if (test_single_size)
+				break;
+			if (cache_sizes[c] == 0)
 				break;
 			curr_size = cache_sizes[c];
 		}
 		c = 0;
 		if (test_single_size)
-			curr_size = max_size / k;
+			curr_size = (max_size / k) & ~255;  /* Align to 256 bytes */
 		else
 			curr_size = cache_sizes[c];
 		printf("Test Random Read Vector\n");
@@ -420,13 +519,15 @@ int main(int argc, char *argv[])
 			start = get_time();
 #pragma omp parallel for schedule(static)
 			for (int job = 0; job < k; job++) {
-				RandomReaderVector(chunk_ptrs + (n_chunks / k * job),
+				RandomReaderVector(chunk_ptrs + ((size_t)n_chunks / k * job),
 						   curr_size / 256, iter);
 			}
 			end = get_time();
 			caculate_speed(c, start, iter, end, curr_size * k, PTYPE_RANDOM_READ);
 			c++;
-			if (c >= (sizeof(cache_sizes) / sizeof(cache_sizes[0])))
+			if (test_single_size)
+				break;
+			if (cache_sizes[c] == 0)
 				break;
 			curr_size = cache_sizes[c];
 		}
@@ -438,12 +539,6 @@ int main(int argc, char *argv[])
 			for (int i = 0; i < PTYPE_MAX; i++)
 				save_data(ypoint[i], c);
 			close_file();
-		} else {
-			create_plot(file_name, job_name, "Block Size", "Rate (MB/s)");
-			set_label(XLABEL_STR_SIZE, xlabel, c, line_titles, PTYPE_MAX);
-			for (int i = 0; i < PTYPE_MAX; i++)
-				write_data(ypoint[i], c);
-			draw_plot();
 		}
 		free(src);
 	}
@@ -463,12 +558,41 @@ int main(int argc, char *argv[])
 			for (int j = 0; j < 4; j++)
 				save_data(ypoint[j], i);
 			close_file();
-		} else {
-			create_plot(file_name, job_name, "Matrix Size", "Time(s)");
-			set_label(XLABEL_STR_SIZE, xlabel, i, line_titles, 4);
-			for (int j = 0; j < 4; j++)
-				write_data(ypoint[j], i);
-			draw_plot();
+		}
+	}
+	if (test == TEST_LATENCY) {
+		omp_set_num_threads(1);
+		c = 0;
+		int offset = 0;
+		if (test_single_size)
+			curr_size = (max_size / k) & ~255;  /* Align to 256 bytes */
+		else
+			curr_size = cache_sizes[c];
+		printf("Test Random Read Vector\n");
+		while (curr_size <= max_size) {
+			iter = dynamic_iter ? (1ull << 30) / curr_size : max_iter;
+			iter = iter < curr_size * 2 ? curr_size * 2 : iter;
+			void *base;
+			void *list = thrash_initialize(curr_size, PAGE_SIZE, CACHE_LINE_SIZE, &base);
+			start = get_time();
+			benchmark_loads((char **)&list, iter);
+			end = get_time();
+			free(base);
+			caculate_latency(c, start, iter, end, curr_size, 0);
+			c++;
+			if (test_single_size)
+				break;
+			if (cache_sizes[c] == 0)
+				break;
+			curr_size = cache_sizes[c];
+		}
+		const char *line_titles[] = { "latency" };
+		if (save_as_file) {
+			create_file(file_name, job_name, "Block Size", "Latency(ns)");
+			save_label(XLABEL_STR_SIZE, xlabel, c, line_titles, 0);
+			for (int j = 0; j < 1; j++)
+				save_data(ypoint[j], c);
+			close_file();
 		}
 	}
 	printf("Save file: %s\n", file_name);
