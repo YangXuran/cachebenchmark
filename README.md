@@ -26,16 +26,43 @@ This project is a memory and cache performance testing tool for ARMv8 systems. I
 
 - -t: set the maximum number of parallel threads. The default is the number of physical threads on the system.
 
+- -c: set CPU affinity internally (e.g., `-c 0,1,2,3` or `-c 0-3`). When specified, threads are bound to the given CPUs using `sched_setaffinity()`. If `-t` is not specified, thread count defaults to the number of CPUs in the list.
+
 - -d: save the test results to a file, then you can use `draw2html.py` to generate a more friendly HTML report.
 
-If you need to set CPU affinity, you can use OpenMP environment variables:
+### CPU Affinity Control
 
-For example, to bind threads to cores 1 and 3, use the following OpenMP environment variables:
+You can control CPU affinity in two ways:
+
+#### Method 1: Using `-c` Parameter (Recommended)
+
+The `-c` option allows you to specify CPU affinity directly from the command line without environment variables:
+
+```bash
+# Bind to specific CPUs (discrete list)
+cachetestbench -t 4 -c 0,4,8,12 -f bandwidth
+
+# Bind to a range of CPUs
+cachetestbench -c 0-3 -f bandwidth
+
+# Mixed format
+cachetestbench -c 0,2,4-7 -f bandwidth
 ```
+
+When using `-c`, the program internally calls `sched_setaffinity()` to bind each OpenMP thread to the specified CPU. The task name in the output file will reflect the actual CPU binding (e.g., `4Thread_bandwidth_CPU0,4,8,12`).
+
+#### Method 2: Using OpenMP Environment Variables
+
+Alternatively, you can use OpenMP environment variables:
+
+```bash
 export OMP_PLACES="{1,3}"
 export OMP_PROC_BIND=close
 cachetestbench -t 2 -f bandwidth
 ```
+
+Note: When both `-c` and `OMP_PLACES` are specified, `-c` takes precedence.
+
 Read this for more details: [OMP_PLACES](https://www.openmp.org/spec-html/5.0/openmpse53.html)
 
 

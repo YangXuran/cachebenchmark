@@ -1,32 +1,38 @@
 CC = aarch64-none-linux-gnu-gcc
 C++ = aarch64-none-linux-gnu-g++
 AS = aarch64-none-linux-gnu-as
-CFLAGS = -O3 -march=armv8.3-a+simd -fopenmp -static -g
+CFLAGS = -O3 -fopenmp
 
-cachetestbench: main.o memcpy-arm64.o routines-arm-64bit.o matrix-multiply.o save2file.o latency.o
-	$(C++) $(CFLAGS) -o cachetestbench main.o memcpy-arm64.o routines-arm-64bit.o matrix-multiply.o save2file.o latency.o -lpthread -lrt -lm
+TARGET = cachetestbench
+OBJS = main.o memcpy-arm64.o routines-arm-64bit.o matrix-multiply.o save2file.o latency.o
 
-main.o : main.c
-	$(CC) $(CFLAGS) -c main.c
+.PHONY: all clean
 
-memcpy-arm64.o : memcpy-arm64.S
-	$(CC) $(CFLAGS) -c memcpy-arm64.S
+all: $(TARGET)
 
-routines-arm-64bit.o : routines-arm-64bit.asm
-	$(AS) -march=armv8-a -c routines-arm-64bit.asm -o routines-arm-64bit.o
+$(TARGET): $(OBJS)
+	$(C++) $(CFLAGS) -o $@ $(OBJS) -lpthread -lrt -lm
 
-matrix-multiply.o : matrix-multiply.cpp
-	$(C++) $(CFLAGS) -c matrix-multiply.cpp
+main.o: main.c
+	$(CC) $(CFLAGS) -c -o $@ $<
 
-draw.o : draw.c
-	$(CC) $(CFLAGS) -c draw.c
+memcpy-arm64.o: memcpy-arm64.S
+	$(CC) $(CFLAGS) -c -o $@ $<
 
-save2file.o : save2file.c
-	$(CC) $(CFLAGS) -c save2file.c
+routines-arm-64bit.o: routines-arm-64bit.asm
+	$(AS) -march=armv8-a -c -o $@ $<
 
-latency.o : latency.c
-	$(CC) $(CFLAGS) -c latency.c
+draw.o: draw.c
+	$(CC) $(CFLAGS) -c -o $@ $<
 
-.PHONY: clean
+save2file.o: save2file.c
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+latency.o: latency.c
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+matrix-multiply.o: matrix-multiply.cpp
+	$(C++) $(CFLAGS) -c -o $@ $<
+
 clean:
-	rm -f *.o cachetestbench
+	rm -f *.o $(TARGET)

@@ -14,7 +14,9 @@ def plot_from_file(filename):
     with open(filename, 'r') as file:
         lines = file.readlines()
 
-    plot_title, xlabel, ylabel = lines[0].strip().split(',')
+    # Use rsplit to handle commas in the title (e.g., "CPU0,1,2,3")
+    parts = lines[0].strip().rsplit(',', 2)
+    plot_title, xlabel, ylabel = parts[0], parts[1], parts[2]
     convert_to_storage_units = "Time" not in ylabel
     line_titles = lines[1].strip().split(',')
     x_labels = lines[2].strip().split(',')

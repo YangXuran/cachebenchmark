@@ -250,6 +250,53 @@ void pin_to_cpu(int cpu)
 	sched_setaffinity(0, sizeof(cpu_set_t), &cpuset);
 }
 
+/* Parse CPU list string like "0,1,2,3" or "0-3" or "0,2,4-7" */
+int parse_cpu_list(const char *str, int *cpus, int max_cpus)
+{
+	int count = 0;
+	char *buf = strdup(str);
+	char *p = buf;
+	
+	while (*p && count < max_cpus) {
+		int start, end;
+		if (sscanf(p, "%d-%d", &start, &end) == 2) {
+			for (int i = start; i <= end && count < max_cpus; i++) {
+				cpus[count++] = i;
+			}
+			while (*p && *p != ',') p++;
+		} else if (sscanf(p, "%d", &start) == 1) {
+			cpus[count++] = start;
+			while (*p && *p != ',') p++;
+		}
+		if (*p == ',') p++;
+	}
+	
+	free(buf);
+	return count;
+}
+
+/* Set CPU affinity for OpenMP threads internally */
+void set_omp_affinity_internal(int num_threads, int *cpus)
+{
+	/* Set number of threads */
+	omp_set_num_threads(num_threads);
+	
+	printf("Set internal affinity: %d threads on CPUs [", num_threads);
+	for (int i = 0; i < num_threads; i++) {
+		printf("%d%s", cpus[i], (i < num_threads - 1) ? "," : "");
+	}
+	printf("]\n");
+}
+
+/* Apply CPU affinity to current thread based on thread ID */
+void apply_thread_affinity(int num_threads, int *cpus)
+{
+	int tid = omp_get_thread_num();
+	if (tid < num_threads) {
+		pin_to_cpu(cpus[tid]);
+	}
+}
+
 int main(int argc, char *argv[])
 {
 	int opt = 0;
@@ -261,13 +308,16 @@ int main(int argc, char *argv[])
 	uint64_t curr_size = MIN_BLOCK_SIZE;
 	void *src, *dest;
 	int k = 1, c, t = 0, dynamic_iter = 1;
+	int use_internal_affinity = 0;
+	int cpu_list[128] = { 0 };
+	int num_cpus = 0;
 	double start, end;
 	uint64_t value = 0x1234567689abcdef;
 	char job_name[256] = { 0 };
 	char file_name[256] = { 0 };
 	char tmp[128] = { 0 };
 
-	while ((opt = getopt(argc, argv, "ds:i:n:t:f:j:S:l:")) != -1) {
+	while ((opt = getopt(argc, argv, "ds:i:n:t:f:j:S:l:c:")) != -1) {
 		switch (opt) {
 		case 's':
 			max_size = parse_size(optarg);
@@ -294,6 +344,28 @@ int main(int argc, char *argv[])
 			break;
 		case 't':
 			t = atoi(optarg);
+			if (t > 0) {
+				if (!use_internal_affinity) {
+					omp_set_num_threads(t);
+				}
+				printf("Set OpenMP threads = %d\n", t);
+			} else {
+				fprintf(stderr, "Error: -t requires a positive integer\n");
+				exit(1);
+			}
+			break;
+		case 'c':
+			num_cpus = parse_cpu_list(optarg, cpu_list, 128);
+			if (num_cpus == 0) {
+				fprintf(stderr, "Error: Invalid CPU list format. Use: -c 0,1,2,3 or -c 0-3\n");
+				exit(1);
+			}
+			use_internal_affinity = 1;
+			/* If -t not specified, use number of CPUs as thread count */
+			if (t == 0) {
+				t = num_cpus;
+			}
+			set_omp_affinity_internal(t, cpu_list);
 			break;
 		case 'f':
 			for (int i = 0; i < TEST_MAX; i++) {
@@ -325,8 +397,19 @@ int main(int argc, char *argv[])
 			break;
 		default:
 			fprintf(stderr,
-				"Usage: %s [-s max_size] [-i max_iter] [-n nice_value] [-t num_threads]"
-				"[-f test case] [-j job_name] [-d save data as file]\n",
+				"Usage: %s [-s max_size] [-i max_iter] [-n nice_value] [-t num_threads] "
+				"[-c cpu_list] [-f test case] [-j job_name] [-d save data as file]\n"
+				"Options:\n"
+				"  -s <size>      Maximum test data size (e.g., 256MB)\n"
+				"  -S <size>      Test single specific size\n"
+				"  -i <loops>     Set test iterations\n"
+				"  -n <value>     Set nice value (default: -20)\n"
+				"  -t <num>       Set OpenMP thread count\n"
+				"  -c <list>      Set CPU affinity (e.g., -c 0,1,2,3 or -c 0-3)\n"
+				"  -f <test>      Test type: memcpy|bandwidth|matrix|latency\n"
+				"  -j <name>      Custom job name\n"
+				"  -d             Save results to file\n"
+				"  -l <granularity>  Linear granularity for test sizes\n",
 				argv[0]);
 			exit(1);
 		}
@@ -345,13 +428,24 @@ int main(int argc, char *argv[])
 
 #pragma omp parallel
 	{
+		/* Apply internal CPU affinity if -c was specified */
+		if (use_internal_affinity) {
+			apply_thread_affinity(t, cpu_list);
+		}
+		
 #pragma omp master
 		{
 			k = omp_get_num_threads();
 			printf("System Maximum threads = %i\n", k);
-			if (getenv("OMP_PLACES")) {
+			/* Only override with OMP_PLACES if -t was not specified */
+			if (t == 0 && getenv("OMP_PLACES")) {
 				k = omp_get_place_num_procs(0);
-				printf("Use threads = %i\n", k);
+				printf("Use threads = %i (from OMP_PLACES)\n", k);
+			} else if (t > 0) {
+				printf("Use threads = %i (from -t option)\n", t);
+			}
+			if (use_internal_affinity) {
+				printf("CPU affinity set internally via -c option\n");
 			}
 		}
 	}
@@ -367,8 +461,23 @@ int main(int argc, char *argv[])
 
 	snprintf(tmp, sizeof(tmp), " %dThread_%s_", k, test_name[test]);
 	strncat(job_name, tmp, sizeof(job_name) - strlen(job_name) - 1);
-	omp_capture_affinity(tmp, sizeof(tmp), "CPU%{thread_affinity}");
-	strncat(job_name, tmp, sizeof(job_name) - strlen(job_name) - 1);
+	
+	/* Use internal CPU list for job name when -c is specified */
+	if (use_internal_affinity) {
+		char cpu_str[256] = { 0 };
+		int pos = 0;
+		pos += snprintf(cpu_str, sizeof(cpu_str), "CPU");
+		for (int i = 0; i < t && i < num_cpus; i++) {
+			if (pos < sizeof(cpu_str) - 10) {
+				pos += snprintf(cpu_str + pos, sizeof(cpu_str) - pos, "%s%d",
+							(i == 0) ? "" : ",", cpu_list[i]);
+			}
+		}
+		strncat(job_name, cpu_str, sizeof(job_name) - strlen(job_name) - 1);
+	} else {
+		omp_capture_affinity(tmp, sizeof(tmp), "CPU%{thread_affinity}");
+		strncat(job_name, tmp, sizeof(job_name) - strlen(job_name) - 1);
+	}
 
 	// omp_set_num_threads(k);
 	printf("%s\n", job_name);
@@ -561,7 +670,11 @@ int main(int argc, char *argv[])
 		}
 	}
 	if (test == TEST_LATENCY) {
-		omp_set_num_threads(1);
+		/* Latency test defaults to single thread, but respect -t if specified */
+		if (t == 0) {
+			omp_set_num_threads(1);
+			k = 1;
+		}
 		c = 0;
 		int offset = 0;
 		if (test_single_size)
